@@ -84,10 +84,18 @@
     };
     // guitar went through the make_splat auto-orient (already level) -> identity;
     // chair predates auto-orient (raw COLMAP, Y-down) -> 180 about X. ?rot= overrides for tuning.
+    // orbit:'object' (default) = full 360 + under-orbit + auto-rotate.
+    // orbit:'scene'  = LOCKED: clamped left/right swing (azimuthHalfDeg each side of front) +
+    //                  limited tilt + NO auto-rotate, so you can't rotate around to see the
+    //                  room/background behind the subject. ?az= overrides the half-range for tuning.
     const MODELS = {
-      guitar: { file: 'guitar.ksplat', title: 'Acoustic Guitar', rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.35 },
-      chair:  { file: 'chair.ksplat',  title: 'Designer Chair',  rotation: 'chairLevel', initAzimuth: 0, initPolar: 1.50 },
-      garden: { file: 'garden.ksplat', title: 'Garden Table',    rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.20 }
+      guitar:  { file: 'guitar.ksplat',  title: 'Acoustic Guitar', rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.35 },
+      chair:   { file: 'chair.ksplat',   title: 'Designer Chair',  rotation: 'chairLevel', initAzimuth: 0, initPolar: 1.50 },
+      garden:  { file: 'garden.ksplat',  title: 'Garden Table',    rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.20 },
+      lego:    { file: 'lego.ksplat',    title: 'LEGO Castle',     rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.30 },
+      // Kitchen: free 360 orbit (unlocked per request — positioned manually), no auto-spin.
+      kitchen: { file: 'kitchen.ksplat', title: 'Kitchen',         rotation: 'x180',
+                 initAzimuth: 3 * Math.PI / 2, initPolar: 1.45, autoRotate: false }
     };
 
     const params = new URLSearchParams(location.search);
@@ -159,16 +167,28 @@
       if (controls.mouseButtons) controls.mouseButtons.RIGHT = null;      // disable right-drag pan
       if (controls.touches) controls.touches.TWO = THREE.TOUCH.DOLLY_ROTATE; // two-finger = zoom+rotate, NOT pan
 
-      // 2) Zoom clamped to a band: can't get close enough to see flaws, can't fly away.
-      controls.minDistance = 0.55 * D;
-      controls.maxDistance = 1.6 * D;
+      const isScene = model.orbit === 'scene';
+      // Opening view distance. A room interior sits much closer to the orbit target than the
+      // auto-framed object distance, so scenes use openDistMul < 1 to pull the camera in.
+      const openDist = D * (model.openDistMul != null ? model.openDistMul : 1.0);
 
-      // 3) Full vertical orbit, including straight underneath.
-      controls.minPolarAngle = 0;
-      controls.maxPolarAngle = Math.PI;
+      // 2) Zoom clamped to a band. Object: wide band around D. Scene: tight band around the
+      //    interior viewpoint, so you can't dolly out into the floater haze or into the walls.
+      if (isScene) {
+        controls.minDistance = 0.7 * openDist;
+        controls.maxDistance = 1.25 * openDist;
+      } else {
+        controls.minDistance = 0.55 * D;
+        controls.maxDistance = 1.6 * D;
+      }
 
-      // 4) Gentle auto-rotate (~1 rev / 24s). OrbitControls speed 2.0 => ~30s; ~2.5 => ~24s.
-      controls.autoRotate = true;
+      // 3) Vertical orbit. Object: full (incl. straight underneath). Scene: limited tilt only.
+      controls.minPolarAngle = isScene ? (model.minPolar != null ? model.minPolar : 0.75) : 0;
+      controls.maxPolarAngle = isScene ? (model.maxPolar != null ? model.maxPolar : 1.95) : Math.PI;
+
+      // 4) Auto-rotate for objects; OFF for scenes (a clamped azimuth + auto-rotate jams at the limit).
+      //    Per-model `autoRotate` overrides this default.
+      controls.autoRotate = (model.autoRotate != null) ? model.autoRotate : !isScene;
       controls.autoRotateSpeed = 2.5;
 
       // Open on a flattering, eye-level, front-facing view (NOT looking down from above).
@@ -176,9 +196,9 @@
         const az = (model.initAzimuth != null) ? model.initAzimuth : Math.PI;
         const pol = (model.initPolar != null) ? model.initPolar : 1.35;  // ~77deg = slightly above eye level
         camera.position.set(
-          controls.target.x + D * Math.sin(pol) * Math.sin(az),
-          controls.target.y + D * Math.cos(pol),
-          controls.target.z + D * Math.sin(pol) * Math.cos(az)
+          controls.target.x + openDist * Math.sin(pol) * Math.sin(az),
+          controls.target.y + openDist * Math.cos(pol),
+          controls.target.z + openDist * Math.sin(pol) * Math.cos(az)
         );
       }
 
@@ -197,10 +217,23 @@
       }
       controls.update();
 
+      // 5) Scene azimuth clamp: lock the left/right swing to a band centered on the opening view,
+      //    so the camera can NEVER rotate around to reveal the room/background behind the subject.
+      if (isScene && model.azimuthHalfDeg != null) {
+        const halfDeg = parseFloat(params.get('az')) || model.azimuthHalfDeg;
+        const half = halfDeg * Math.PI / 180;
+        const curAz = controls.getAzimuthalAngle();
+        controls.minAzimuthAngle = curAz - half;
+        controls.maxAzimuthAngle = curAz + half;
+        controls.update();
+        hintEl.textContent = 'Drag left & right to look around · scroll / pinch to zoom';
+      }
+
       window.__controlLock = {
-        D, enablePan: controls.enablePan,
+        D, isScene, enablePan: controls.enablePan,
         minDistance: controls.minDistance, maxDistance: controls.maxDistance,
         minPolarAngle: controls.minPolarAngle, maxPolarAngle: controls.maxPolarAngle,
+        minAzimuthAngle: controls.minAzimuthAngle, maxAzimuthAngle: controls.maxAzimuthAngle,
         autoRotate: controls.autoRotate, autoRotateSpeed: controls.autoRotateSpeed,
         target: controls.target.toArray(), cameraPos: camera.position.toArray()
       };
