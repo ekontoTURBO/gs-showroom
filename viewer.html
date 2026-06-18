@@ -78,13 +78,15 @@
       x90:   [0.70710678, 0, 0, 0.70710678],
       xneg90:[-0.70710678, 0, 0, 0.70710678],
       y180:  [0, 1, 0, 0],
-      z180:  [0, 0, 1, 0]
+      z180:  [0, 0, 1, 0],
+      // chair (raw COLMAP frame, pre-auto-orient): 2.3416 rad (pi - 0.8) about X levels it onto its feet
+      chairLevel: [0.92106099, 0, 0, 0.38941834]
     };
     // guitar went through the make_splat auto-orient (already level) -> identity;
     // chair predates auto-orient (raw COLMAP, Y-down) -> 180 about X. ?rot= overrides for tuning.
     const MODELS = {
       guitar: { file: 'guitar.ksplat', title: 'Acoustic Guitar', rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.35 },
-      chair:  { file: 'chair.ksplat',  title: 'Designer Chair',  rotation: 'x180', initAzimuth: 0,       initPolar: 1.30 }
+      chair:  { file: 'chair.ksplat',  title: 'Designer Chair',  rotation: 'chairLevel', initAzimuth: 0, initPolar: 1.50 }
     };
 
     const params = new URLSearchParams(location.search);
