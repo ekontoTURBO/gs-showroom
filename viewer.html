@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Showroom viewer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2314151a'/%3E%3Ccircle cx='8' cy='8' r='3.5' fill='%23c7cad1'/%3E%3C/svg%3E" />
+  <style>
+    :root { color-scheme: dark; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; width: 100%; overflow: hidden; background: #14151a; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    #viewer { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+    #topbar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+      display: flex; align-items: center; gap: 14px;
+      padding: 14px 20px;
+      background: linear-gradient(180deg, rgba(10,11,15,0.75) 0%, rgba(10,11,15,0) 100%);
+      pointer-events: none;
+    }
+    #topbar a {
+      pointer-events: auto;
+      color: #c7cad1; text-decoration: none; font-size: 14px; letter-spacing: .02em;
+      border: 1px solid rgba(255,255,255,.16); border-radius: 999px;
+      padding: 7px 14px; transition: background .15s, color .15s;
+      background: rgba(255,255,255,.03);
+    }
+    #topbar a:hover { background: rgba(255,255,255,.10); color: #fff; }
+    #title { font-size: 15px; font-weight: 600; color: #f2f3f5; letter-spacing: .01em; }
+    #hint {
+      position: fixed; bottom: 16px; left: 0; right: 0; z-index: 20; text-align: center;
+      color: rgba(220,222,228,.55); font-size: 12.5px; letter-spacing: .03em; pointer-events: none;
+      transition: opacity .8s ease; user-select: none;
+    }
+    #loading {
+      position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; background: #14151a; color: #c7cad1; font-size: 14px;
+      transition: opacity .5s ease;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 34px; height: 34px; border-radius: 50%;
+      border: 3px solid rgba(255,255,255,.14); border-top-color: rgba(255,255,255,.7);
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #err { color: #ff8a8a; max-width: 80%; text-align: center; line-height: 1.5; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./lib/three.module.js",
+      "@mkkellogg/gaussian-splats-3d": "./lib/gaussian-splats-3d.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="topbar">
+    <a href="./index.html">&larr; Showroom</a>
+    <span id="title">Loading&hellip;</span>
+  </div>
+  <div id="viewer"></div>
+  <div id="hint">Drag to orbit &middot; scroll / pinch to zoom &middot; auto-rotating</div>
+  <div id="loading"><div class="spinner"></div><div id="loadtext">Loading model&hellip;</div></div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import * as GS3D from '@mkkellogg/gaussian-splats-3d';
+
+    // rotation = quaternion [x,y,z,w] applied to the splat scene to stand it upright.
+    // Both captures arrive in a Y-down frame, so a 180° turn about X puts Y up.
+    // quaternion for 180° about X axis = [1, 0, 0, 0].
+    // named scene rotations (quaternion [x,y,z,w]) to stand a splat upright.
+    const ROTS = {
+      identity: [0, 0, 0, 1],
+      x180:  [1, 0, 0, 0],
+      x90:   [0.70710678, 0, 0, 0.70710678],
+      xneg90:[-0.70710678, 0, 0, 0.70710678],
+      y180:  [0, 1, 0, 0],
+      z180:  [0, 0, 1, 0]
+    };
+    // guitar went through the make_splat auto-orient (already level) -> identity;
+    // chair predates auto-orient (raw COLMAP, Y-down) -> 180 about X. ?rot= overrides for tuning.
+    const MODELS = {
+      guitar: { file: 'guitar.ksplat', title: 'Acoustic Guitar', rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.35 },
+      chair:  { file: 'chair.ksplat',  title: 'Designer Chair',  rotation: 'x180', initAzimuth: 0,       initPolar: 1.30 }
+    };
+
+    const params = new URLSearchParams(location.search);
+    const key = (params.get('model') || 'guitar').toLowerCase();
+    const model = MODELS[key] || MODELS.guitar;
+    const rotName = params.get('rot') || model.rotation;
+    const rotationQuat = ROTS[rotName] || ROTS.identity;
+    document.getElementById('title').textContent = model.title;
+    document.title = model.title + ' — Showroom';
+
+    const loadingEl = document.getElementById('loading');
+    const loadtextEl = document.getElementById('loadtext');
+    const hintEl = document.getElementById('hint');
+
+    function fail(msg) {
+      loadingEl.classList.remove('hidden');
+      loadtextEl.innerHTML = '<div id="err">' + msg + '</div>';
+      console.error('[showroom] ' + msg);
+    }
+
+    // --- Viewer setup ---------------------------------------------------------
+    // CRITICAL for GitHub Pages: no COOP/COEP headers => no SharedArrayBuffer.
+    // sharedMemoryForWorkers:false makes the lib use a plain worker / main-thread
+    // sort instead of SAB, so it does NOT crash on Pages.
+    const viewer = new GS3D.Viewer({
+      cameraUp: [0, 1, 0],
+      sharedMemoryForWorkers: false,
+      gpuAcceleratedSort: false,
+      sphericalHarmonicsDegree: 0,
+      useBuiltInControls: true,
+      // Neutral framing; the lib will auto-orient/zoom the controls to the splat.
+      rootElement: document.getElementById('viewer'),
+      antialiased: true
+    });
+
+    // Expose for Playwright assertions.
+    window.__viewer = viewer;
+    window.__controlLock = null;
+
+    viewer.addSplatScene(model.file, {
+      format: GS3D.SceneFormat.KSplat,
+      showLoadingUI: false,
+      progressiveLoad: false,
+      rotation: rotationQuat,
+      splatAlphaRemovalThreshold: 5
+    }).then(() => {
+      viewer.start();
+      lockControls();
+      loadingEl.classList.add('hidden');
+      // Fade the hint out after a few seconds.
+      setTimeout(() => { hintEl.style.opacity = '0'; }, 4500);
+      console.log('[showroom] scene ready: ' + key);
+    }).catch((e) => {
+      fail('Failed to load model: ' + (e && e.message ? e.message : e));
+    });
+
+    // --- Locked "showroom" controls ------------------------------------------
+    function lockControls() {
+      const controls = viewer.controls;
+      const camera = viewer.camera;
+      if (!controls || !camera) { console.warn('[showroom] no controls/camera'); return; }
+
+      // Distance from the (already auto-framed) camera to the orbit target.
+      const D = camera.position.distanceTo(controls.target);
+
+      // 1) Orbit only — no panning, object stays centered.
+      controls.enablePan = false;
+      controls.screenSpacePanning = false;
+      if (controls.mouseButtons) controls.mouseButtons.RIGHT = null;      // disable right-drag pan
+      if (controls.touches) controls.touches.TWO = THREE.TOUCH.DOLLY_ROTATE; // two-finger = zoom+rotate, NOT pan
+
+      // 2) Zoom clamped to a band: can't get close enough to see flaws, can't fly away.
+      controls.minDistance = 0.55 * D;
+      controls.maxDistance = 1.6 * D;
+
+      // 3) Full vertical orbit, including straight underneath.
+      controls.minPolarAngle = 0;
+      controls.maxPolarAngle = Math.PI;
+
+      // 4) Gentle auto-rotate (~1 rev / 24s). OrbitControls speed 2.0 => ~30s; ~2.5 => ~24s.
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = 2.5;
+
+      // Open on a flattering, eye-level, front-facing view (NOT looking down from above).
+      {
+        const az = (model.initAzimuth != null) ? model.initAzimuth : Math.PI;
+        const pol = (model.initPolar != null) ? model.initPolar : 1.35;  // ~77deg = slightly above eye level
+        camera.position.set(
+          controls.target.x + D * Math.sin(pol) * Math.sin(az),
+          controls.target.y + D * Math.cos(pol),
+          controls.target.z + D * Math.sin(pol) * Math.cos(az)
+        );
+      }
+
+      // Touch friendly: one-finger orbit (default ROTATE), damping for smoothness.
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.zoomSpeed = 0.8;
+      controls.rotateSpeed = 0.7;
+
+      // Clamp current distance into the band in case auto-frame sat outside it.
+      const cur = camera.position.distanceTo(controls.target);
+      const clamped = Math.min(controls.maxDistance, Math.max(controls.minDistance, cur));
+      if (clamped !== cur) {
+        const dir = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+        camera.position.copy(controls.target).addScaledVector(dir, clamped);
+      }
+      controls.update();
+
+      window.__controlLock = {
+        D, enablePan: controls.enablePan,
+        minDistance: controls.minDistance, maxDistance: controls.maxDistance,
+        minPolarAngle: controls.minPolarAngle, maxPolarAngle: controls.maxPolarAngle,
+        autoRotate: controls.autoRotate, autoRotateSpeed: controls.autoRotateSpeed,
+        target: controls.target.toArray(), cameraPos: camera.position.toArray()
+      };
+      console.log('[showroom] controls locked: ' + JSON.stringify(window.__controlLock));
+    }
+
+    // Helper for tests: orbit to a low/under angle and render one frame.
+    window.__orbitToUnder = function (polar) {
+      const controls = viewer.controls, camera = viewer.camera;
+      const t = controls.target;
+      const r = camera.position.distanceTo(t);
+      const offset = new THREE.Vector3().subVectors(camera.position, t);
+      const sph = new THREE.Spherical().setFromVector3(offset);
+      sph.phi = polar != null ? polar : (Math.PI - 0.25); // near straight-up-from-below
+      sph.radius = r;
+      offset.setFromSpherical(sph);
+      camera.position.copy(t).add(offset);
+      controls.update();
+      viewer.render();
+      return { phi: sph.phi, cameraPos: camera.position.toArray() };
+    };
+  </script>
+</body>
+</html>
