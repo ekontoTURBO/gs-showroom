@@ -86,7 +86,8 @@
     // chair predates auto-orient (raw COLMAP, Y-down) -> 180 about X. ?rot= overrides for tuning.
     const MODELS = {
       guitar: { file: 'guitar.ksplat', title: 'Acoustic Guitar', rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.35 },
-      chair:  { file: 'chair.ksplat',  title: 'Designer Chair',  rotation: 'chairLevel', initAzimuth: 0, initPolar: 1.50 }
+      chair:  { file: 'chair.ksplat',  title: 'Designer Chair',  rotation: 'chairLevel', initAzimuth: 0, initPolar: 1.50 },
+      garden: { file: 'garden.ksplat', title: 'Garden Table',    rotation: 'x180', initAzimuth: Math.PI, initPolar: 1.20 }
     };
 
     const params = new URLSearchParams(location.search);
